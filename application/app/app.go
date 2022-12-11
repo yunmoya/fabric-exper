@@ -3,9 +3,13 @@ package main
 import (
 	peerConfig "app/config"
 	"app/contract"
+	"app/myabi"
+	"context"
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"github.com/ethereum/go-ethereum"
+	"github.com/ethereum/go-ethereum/accounts/abi"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -15,6 +19,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/hyperledger/fabric-gateway/pkg/client"
 	"github.com/hyperledger/fabric-gateway/pkg/identity"
 	"google.golang.org/grpc"
@@ -35,12 +42,21 @@ var peerInfo = new(peerConfig.PeerInfo)
 var IPArr = [CSPNUM + 1]string{"", "10.1.0.133", "10.1.0.154", "10.1.0.155"}
 
 type VMReq struct {
-	ID              uint64 `json:"ID"`            // user request id
-	UserId          string `json:"UserId"`        // user id
-	PubKey          []byte `json:"PubKey"`        // user public key
-	Config          int    `json:"Configuration"` // cpu num
-	Duration        int    `json:"Duration"`      // duration for which the VM is requested
-	EncryptRequired bool   `json:EncryptRequired` //true：encryption required false: no encryption required
+	ID              string `json:"ID"`              // user request id
+	UserId          string `json:"UserId"`          // user id
+	PubKey          []byte `json:"PubKey"`          // user public key
+	Config          int    `json:"Configuration"`   // cpu num
+	Duration        int    `json:"Duration"`        // duration for which the VM is requested
+	EncryptRequired bool   `json:"EncryptRequired"` //true：encryption required false: no encryption required
+}
+
+type ReqData struct {
+	User            common.Address
+	UserId          string // user id
+	PubKey          []byte // user public key
+	Config          int    // cpu num
+	Duration        int    // duration for which the VM is requested
+	EncryptRequired bool   //true：encryption required false: no encryption required
 }
 
 type ReqBody struct {
@@ -85,35 +101,77 @@ func main() {
 	contract.InitFairLedger(fairContract)
 
 	// todo: geth client config
-
-	// todo: event listener based on geth
-
-	// if get new block in public blockchain
-	// request propagation contract(ec)
-	// ec >= sum/2 => schedule contract(fair)
-	// 1. Get request, blockNumber and offset in the newest block
-	var blockNumber uint64
-	offset := 1
-	blockNumber = 1
-	req := VMReq{ID: 1, UserId: "user1", Config: 8, Duration: 3, EncryptRequired: false}
-	// 2. Get the EC Asset Id
-	assetECId := GetECAssetId(blockNumber, offset)
-	// 3. Check if it is exist in private blockchain
-	if contract.ECAssetExist(ecContract, assetECId) {
-		// 4-1. ec+1
-		contract.EndorsementIncAsync(ecContract, assetECId)
-	} else {
-		// 4-2. create new Asset
-		contract.CreateECLedger(ecContract, blockNumber, offset)
+	// client, err := ethclient.Dial("wss://goerli.infura.io/ws/v3/547bcf201d264561b95c50860d2dddff")
+	client, err := ethclient.Dial("ws://localhost:7545") //ganache
+	if err != nil {
+		log.Fatal(err)
 	}
 
-	// 5. Check if ecNum > 3/2
-	ecAsset := contract.ReadECAssetByID(ecContract, assetECId)
-	if ecAsset.EndorsementCount >= peerConsensusThreshold && ecAsset.Status == 0 {
-		// 6. update status to completed(1)
-		contract.ChangeECAssetStatusAsync(ecContract, assetECId, 1)
-		// 7. fair scheduled contract process request
-		ProcessReq(fairContract, req)
+	// contractAddress := common.HexToAddress("0x74770669068090D6dCeA5163aBD5af61829A647a")
+	contractAddress := common.HexToAddress("0x59Af076b2A8f82A17062c78626B226A1cAd5CACC") //ganache
+	query := ethereum.FilterQuery{
+		Addresses: []common.Address{contractAddress},
+	}
+
+	logs := make(chan types.Log)
+	sub, err := client.SubscribeFilterLogs(context.Background(), query, logs)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	contractAbi, err := abi.JSON(strings.NewReader(string(myabi.UserreqMetaData.ABI)))
+
+	for {
+		select {
+		case err := <-sub.Err():
+			log.Fatal(err)
+		case vLog := <-logs:
+			log.Print("New Event:")
+			vLogJson, err := json.Marshal(vLog)
+			if err != nil {
+				log.Fatal(err)
+			}
+			log.Println(string(vLogJson)) // pointer to event log
+			// if get new block in public blockchain
+			// request propagation contract(ec)
+			// ec >= sum/2 => schedule contract(fair)
+			// 1. Get request, blockNumber and offset in the newest block
+			blockNumber := vLog.BlockNumber
+			offset := vLog.TxIndex
+			reqData := new(ReqData)
+			err = contractAbi.UnpackIntoInterface(reqData, "NewRequest", vLog.Data)
+			if err != nil {
+				log.Fatal(err)
+			}
+			log.Print("Parse request data successfully: %v", reqData)
+			req := VMReq{
+				ID:     GetECAssetId(blockNumber, offset),
+				UserId: reqData.UserId, Config: reqData.Config,
+				Duration:        reqData.Duration,
+				PubKey:          reqData.PubKey,
+				EncryptRequired: reqData.EncryptRequired,
+			}
+			log.Print("The user request for private blockchain is: %v", req)
+			// 2. Get the EC Asset Id
+			assetECId := GetECAssetId(blockNumber, offset)
+			// 3. Check if it is exist in private blockchain
+			if contract.ECAssetExist(ecContract, assetECId) {
+				// 4-1. ec+1
+				contract.EndorsementIncAsync(ecContract, assetECId)
+			} else {
+				// 4-2. create new Asset
+				contract.CreateECLedger(ecContract, blockNumber, int(offset))
+			}
+
+			// 5. Check if ecNum > 3/2
+			ecAsset := contract.ReadECAssetByID(ecContract, assetECId)
+			if ecAsset.EndorsementCount >= peerConsensusThreshold && ecAsset.Status == 0 {
+				// 6. update status to completed(1)
+				contract.ChangeECAssetStatusAsync(ecContract, assetECId, 1)
+				// 7. fair scheduled contract process request
+				ProcessReq(fairContract, req)
+			}
+		}
 	}
 }
 
@@ -214,8 +272,8 @@ func newSign() identity.Sign {
 	return sign
 }
 
-func GetECAssetId(blockNumber uint64, offset int) string {
-	return "asset" + strconv.FormatUint(blockNumber, 10) + "-" + strconv.Itoa(offset)
+func GetECAssetId(blockNumber uint64, offset uint) string {
+	return "asset" + strconv.FormatUint(blockNumber, 10) + "-" + string(offset)
 }
 
 func ProcessReq(fairContract *client.Contract, req VMReq) {
@@ -258,7 +316,7 @@ func GetAssignInfo(cspId int, vmReq VMReq) (*AssignVO, error) {
 		return nil, fmt.Errorf("Response body read fail, err: %v", err)
 	}
 	respBody := new(RespBody)
-	err = json.Unmarshal(body, respBody)
+	err = json.Unmarshal(body, &respBody)
 	log.Printf("Get response msg:\ncode: %d\nmsg: %s", respBody.Code, respBody.Msg)
 	if respBody.Code == 200 {
 		return &respBody.AssignVO, nil
