@@ -62,10 +62,10 @@ func ECAssetExist(contract *client.Contract, assetId string) bool {
 	return result
 }
 
-func CreateECLedger(contract *client.Contract, blockNumber uint64, offset int) {
+func CreateECLedger(contract *client.Contract, assetId string) {
 	log.Print("============ Create EC Ledger ============")
 
-	_, err := contract.SubmitTransaction("CreateLedger", string(blockNumber), strconv.Itoa(offset), "1")
+	_, err := contract.SubmitTransaction("CreateLedger", assetId)
 	if err != nil {
 		panic(fmt.Errorf("failed to submit transaction: %w", err))
 	}

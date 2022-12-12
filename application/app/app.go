@@ -29,7 +29,7 @@ import (
 )
 
 const (
-	CSPNUM                 = 3
+	CSPNUM                 = 2
 	REQ_PORT               = 8080
 	peerConsensusThreshold = 2
 	channelName            = "lccch"
@@ -39,23 +39,23 @@ const (
 )
 
 var peerInfo = new(peerConfig.PeerInfo)
-var IPArr = [CSPNUM + 1]string{"", "10.1.0.133", "10.1.0.154", "10.1.0.155"}
+var IPArr = [CSPNUM + 1]string{"", "10.1.0.133", "10.1.0.154"}
 
 type VMReq struct {
 	ID              string `json:"ID"`              // user request id
 	UserId          string `json:"UserId"`          // user id
-	PubKey          []byte `json:"PubKey"`          // user public key
-	Config          int    `json:"Configuration"`   // cpu num
-	Duration        int    `json:"Duration"`        // duration for which the VM is requested
+	PubKey          string `json:"PubKey"`          // user public key
+	Config          uint32 `json:"Configuration"`   // cpu num
+	Duration        uint32 `json:"Duration"`        // duration for which the VM is requested
 	EncryptRequired bool   `json:"EncryptRequired"` //true：encryption required false: no encryption required
 }
 
 type ReqData struct {
 	User            common.Address
 	UserId          string // user id
-	PubKey          []byte // user public key
-	Config          int    // cpu num
-	Duration        int    // duration for which the VM is requested
+	PubKey          string // user public key
+	Config          uint32 // cpu num
+	Duration        uint32 // duration for which the VM is requested
 	EncryptRequired bool   //true：encryption required false: no encryption required
 }
 
@@ -81,7 +81,7 @@ type AssignVO struct {
 
 func main() {
 	log.Println("============ application starts ============")
-	err := peerConfig.LoadPeerInfo("config.yaml", peerInfo)
+	err := peerConfig.LoadPeerInfo("config154.yaml", peerInfo)
 	if err != nil {
 		log.Panic(err)
 	}
@@ -101,14 +101,14 @@ func main() {
 	contract.InitFairLedger(fairContract)
 
 	// todo: geth client config
-	// client, err := ethclient.Dial("wss://goerli.infura.io/ws/v3/547bcf201d264561b95c50860d2dddff")
-	client, err := ethclient.Dial("ws://localhost:7545") //ganache
+	client, err := ethclient.Dial("wss://goerli.infura.io/ws/v3/547bcf201d264561b95c50860d2dddff")
+	//client, err := ethclient.Dial("ws://localhost:7545") //ganache
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	// contractAddress := common.HexToAddress("0x74770669068090D6dCeA5163aBD5af61829A647a")
-	contractAddress := common.HexToAddress("0x59Af076b2A8f82A17062c78626B226A1cAd5CACC") //ganache
+	contractAddress := common.HexToAddress("0x74770669068090D6dCeA5163aBD5af61829A647a")
+	//contractAddress := common.HexToAddress("0x59Af076b2A8f82A17062c78626B226A1cAd5CACC") //ganache
 	query := ethereum.FilterQuery{
 		Addresses: []common.Address{contractAddress},
 	}
@@ -138,29 +138,31 @@ func main() {
 			// 1. Get request, blockNumber and offset in the newest block
 			blockNumber := vLog.BlockNumber
 			offset := vLog.TxIndex
+			log.Println("The offset is: ", offset)
 			reqData := new(ReqData)
 			err = contractAbi.UnpackIntoInterface(reqData, "NewRequest", vLog.Data)
 			if err != nil {
 				log.Fatal(err)
 			}
-			log.Print("Parse request data successfully: %v", reqData)
+			log.Print("Parse request data successfully: ", reqData)
 			req := VMReq{
-				ID:     GetECAssetId(blockNumber, offset),
-				UserId: reqData.UserId, Config: reqData.Config,
+				ID:              GetECAssetId(blockNumber, int(offset)),
+				UserId:          reqData.UserId,
+				Config:          reqData.Config,
 				Duration:        reqData.Duration,
 				PubKey:          reqData.PubKey,
 				EncryptRequired: reqData.EncryptRequired,
 			}
-			log.Print("The user request for private blockchain is: %v", req)
+			log.Print("The user request for private blockchain is: ", req)
 			// 2. Get the EC Asset Id
-			assetECId := GetECAssetId(blockNumber, offset)
+			assetECId := GetECAssetId(blockNumber, int(offset))
 			// 3. Check if it is exist in private blockchain
 			if contract.ECAssetExist(ecContract, assetECId) {
 				// 4-1. ec+1
 				contract.EndorsementIncAsync(ecContract, assetECId)
 			} else {
 				// 4-2. create new Asset
-				contract.CreateECLedger(ecContract, blockNumber, int(offset))
+				contract.CreateECLedger(ecContract, assetECId)
 			}
 
 			// 5. Check if ecNum > 3/2
@@ -272,12 +274,12 @@ func newSign() identity.Sign {
 	return sign
 }
 
-func GetECAssetId(blockNumber uint64, offset uint) string {
-	return "asset" + strconv.FormatUint(blockNumber, 10) + "-" + string(offset)
+func GetECAssetId(blockNumber uint64, offset int) string {
+	return "asset" + strconv.FormatUint(blockNumber, 10) + "-" + strconv.Itoa(offset)
 }
 
 func ProcessReq(fairContract *client.Contract, req VMReq) {
-	cspId := contract.SelectCSP(fairContract, req.Config)
+	cspId := contract.SelectCSP(fairContract, int(req.Config))
 	if cspId == -1 {
 		log.Printf("select csp fail, the request's detail is %v", req.UserId, req)
 		return
@@ -300,7 +302,7 @@ func ProcessReq(fairContract *client.Contract, req VMReq) {
 func GetAssignInfo(cspId int, vmReq VMReq) (*AssignVO, error) {
 	ip := IPArr[cspId]
 	url := "http://" + ip + ":" + strconv.Itoa(REQ_PORT) + assignPath
-	reqBodyContent := ReqBody{Config: vmReq.Config, Duration: vmReq.Duration, UserId: vmReq.UserId}
+	reqBodyContent := ReqBody{Config: int(vmReq.Config), Duration: int(vmReq.Duration), UserId: vmReq.UserId}
 	reqBodyContentJson, err := json.Marshal(reqBodyContent)
 	if err != nil {
 		return nil, fmt.Errorf("Marshal RequestParam fail, err:%v", err)

@@ -14,26 +14,20 @@ type SmartContract struct {
 	contractapi.Contract
 }
 
-type SeqNumber struct {
-	BlockNumber uint64 `json:"BlockNumber"`
-	Offset      int    `json:"Offset"`
-}
-
 // Asset describes basic details of what makes up a simple asset
 type Asset struct {
-	ID               string    `json:"ID"`
-	SequenceNumber   SeqNumber `json:"SequenceNumber"`
-	EndorsementCount int       `json:"EndorsementCount"`
-	Status           int       `json:"Status"`
+	ID               string `json:"ID"`
+	EndorsementCount int    `json:"EndorsementCount"`
+	Status           int    `json:"Status"`
 }
 
 func (s *SmartContract) InitLedger(ctx contractapi.TransactionContextInterface) error {
 	assets := []Asset{
-		{ID: "asset1-0", SequenceNumber: SeqNumber{BlockNumber: 1, Offset: 0}, EndorsementCount: 1, Status: 0},
-		{ID: "asset1-1", SequenceNumber: SeqNumber{BlockNumber: 1, Offset: 1}, EndorsementCount: 1, Status: 0},
-		{ID: "asset1-2", SequenceNumber: SeqNumber{BlockNumber: 1, Offset: 2}, EndorsementCount: 1, Status: 0},
-		{ID: "asset2-0", SequenceNumber: SeqNumber{BlockNumber: 2, Offset: 0}, EndorsementCount: 1, Status: 0},
-		{ID: "asset2-1", SequenceNumber: SeqNumber{BlockNumber: 2, Offset: 1}, EndorsementCount: 1, Status: 0},
+		{ID: "asset1-0", EndorsementCount: 1, Status: 0},
+		{ID: "asset1-1", EndorsementCount: 1, Status: 0},
+		{ID: "asset1-2", EndorsementCount: 1, Status: 0},
+		{ID: "asset2-0", EndorsementCount: 1, Status: 0},
+		{ID: "asset2-1", EndorsementCount: 1, Status: 0},
 	}
 
 	for _, asset := range assets {
@@ -51,8 +45,7 @@ func (s *SmartContract) InitLedger(ctx contractapi.TransactionContextInterface) 
 	return nil
 }
 
-func (s *SmartContract) CreateLedger(ctx contractapi.TransactionContextInterface, blockNumber uint64, offset int, endorsementCount int) error {
-	id := getId(blockNumber, offset)
+func (s *SmartContract) CreateLedger(ctx contractapi.TransactionContextInterface, id string) error {
 	exists, err := s.AssetExists(ctx, id)
 	if err != nil {
 		return err
@@ -61,10 +54,8 @@ func (s *SmartContract) CreateLedger(ctx contractapi.TransactionContextInterface
 		return fmt.Errorf("the asset %s already exists", id)
 	}
 
-	sequenceNumber := SeqNumber{BlockNumber: blockNumber, Offset: offset}
 	asset := Asset{
 		ID:               id,
-		SequenceNumber:   sequenceNumber,
 		EndorsementCount: 1,
 		Status:           0,
 	}
