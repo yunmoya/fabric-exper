@@ -45,10 +45,10 @@ func InitFairLedger(fairContract *client.Contract) {
 	log.Print("============ Transaction committed successfully ============")
 }
 
-func ECAssetExist(contract *client.Contract, assetId string) bool {
+func StatusAssetExists(contract *client.Contract, assetId string) bool {
 	log.Print("============ EC Asset Exist ============")
 
-	evaluateResult, err := contract.EvaluateTransaction("AssetExists", assetId)
+	evaluateResult, err := contract.EvaluateTransaction("StatusAssetExists", assetId)
 	if err != nil {
 		log.Panic(fmt.Errorf("failed to evaluate transaction: %w", err))
 	}
@@ -96,7 +96,7 @@ func EndorsementIncAsync(contract *client.Contract, assetId string) {
 func ReadECAssetByID(contract *client.Contract, assetId string) *ECAsset {
 	log.Print("============ Read EC Asset By Id ============")
 
-	evaluateResult, err := contract.EvaluateTransaction("ReadAsset", assetId)
+	evaluateResult, err := contract.EvaluateTransaction("ReadEC", assetId)
 	if err != nil {
 		log.Panic(fmt.Errorf("failed to evaluate transaction: %w", err))
 	}
@@ -110,24 +110,16 @@ func ReadECAssetByID(contract *client.Contract, assetId string) *ECAsset {
 	return result
 }
 
-func ChangeECAssetStatusAsync(contract *client.Contract, assetId string, status int) {
+func ChangeECAssetStatus(contract *client.Contract, assetId string) error {
 	log.Print("============ Async Change EC Asset Status ============")
 
-	_, commit, err := contract.SubmitAsync("ChangeStatus", client.WithArguments(assetId, strconv.Itoa(status)))
+	_, err := contract.SubmitTransaction("SetStatus", assetId)
 	if err != nil {
-		panic(fmt.Errorf("failed to submit transaction asynchronously: %w", err))
-	}
-
-	log.Printf("Successfully submitted transaction to increase %s's ec.")
-	log.Println("Waiting for transaction commit.")
-
-	if commitStatus, err := commit.Status(); err != nil {
-		log.Panic(fmt.Errorf("failed to get commit status: %w", err))
-	} else if !commitStatus.Successful {
-		log.Panic(fmt.Errorf("transaction %s failed to commit with status: %d", commitStatus.TransactionID, int32(commitStatus.Code)))
+		return fmt.Errorf("failed to submit transaction: %w", err)
 	}
 
 	log.Printf("============ Transaction committed successfully ============ ")
+	return nil
 }
 
 func SelectCSP(contract *client.Contract, config int) int {

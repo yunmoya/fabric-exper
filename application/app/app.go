@@ -29,7 +29,7 @@ import (
 )
 
 const (
-	CSPNUM                 = 2
+	CSPNUM                 = 3
 	REQ_PORT               = 8080
 	peerConsensusThreshold = 2
 	channelName            = "lccch"
@@ -39,7 +39,7 @@ const (
 )
 
 var peerInfo = new(peerConfig.PeerInfo)
-var IPArr = [CSPNUM + 1]string{"", "10.1.0.133", "10.1.0.154"}
+var IPArr = [CSPNUM + 1]string{"", "10.1.0.133", "10.1.0.154", "10.1.0.155"}
 
 type VMReq struct {
 	ID              string `json:"ID"`              // user request id
@@ -81,7 +81,7 @@ type AssignVO struct {
 
 func main() {
 	log.Println("============ application starts ============")
-	err := peerConfig.LoadPeerInfo("config154.yaml", peerInfo)
+	err := peerConfig.LoadPeerInfo("config133.yaml", peerInfo)
 	if err != nil {
 		log.Panic(err)
 	}
@@ -100,7 +100,6 @@ func main() {
 	contract.InitECLedger(ecContract)
 	contract.InitFairLedger(fairContract)
 
-	// todo: geth client config
 	client, err := ethclient.Dial("wss://goerli.infura.io/ws/v3/547bcf201d264561b95c50860d2dddff")
 	//client, err := ethclient.Dial("ws://localhost:7545") //ganache
 	if err != nil {
@@ -145,8 +144,9 @@ func main() {
 				log.Fatal(err)
 			}
 			log.Print("Parse request data successfully: ", reqData)
+			assetECId := GetECAssetId(blockNumber, int(offset))
 			req := VMReq{
-				ID:              GetECAssetId(blockNumber, int(offset)),
+				ID:              assetECId,
 				UserId:          reqData.UserId,
 				Config:          reqData.Config,
 				Duration:        reqData.Duration,
@@ -154,24 +154,26 @@ func main() {
 				EncryptRequired: reqData.EncryptRequired,
 			}
 			log.Print("The user request for private blockchain is: ", req)
-			// 2. Get the EC Asset Id
-			assetECId := GetECAssetId(blockNumber, int(offset))
-			// 3. Check if it is exist in private blockchain
-			if contract.ECAssetExist(ecContract, assetECId) {
-				// 4-1. ec+1
-				contract.EndorsementIncAsync(ecContract, assetECId)
-			} else {
-				// 4-2. create new Asset
-				contract.CreateECLedger(ecContract, assetECId)
-			}
+			// 2. update the EC Asset Id
+			contract.EndorsementIncAsync(ecContract, assetECId)
 
-			// 5. Check if ecNum > 3/2
+			// 3. Check if ecNum > 3/2 && request's status doesn't exist
 			ecAsset := contract.ReadECAssetByID(ecContract, assetECId)
-			if ecAsset.EndorsementCount >= peerConsensusThreshold && ecAsset.Status == 0 {
-				// 6. update status to completed(1)
-				contract.ChangeECAssetStatusAsync(ecContract, assetECId, 1)
-				// 7. fair scheduled contract process request
-				ProcessReq(fairContract, req)
+
+			for {
+				if ecAsset.EndorsementCount < peerConsensusThreshold || contract.StatusAssetExists(ecContract, assetECId) {
+					break
+				} else {
+					// 4. update status to completed(1)
+					err = contract.ChangeECAssetStatus(ecContract, assetECId)
+					if err != nil {
+						log.Print(err)
+						continue
+					} else {
+						// 5. fair scheduled contract process request
+						ProcessReq(fairContract, req)
+					}
+				}
 			}
 		}
 	}
