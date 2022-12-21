@@ -3,6 +3,7 @@ package main
 import (
 	peerConfig "app/config"
 	"app/contract"
+	"app/cosiUtil"
 	"app/myabi"
 	"context"
 	"crypto/x509"
@@ -36,6 +37,7 @@ const (
 	ecContractName         = "ec"
 	fairContractName       = "fair"
 	assignPath             = "/assignInfo/assign"
+	rosterFileName         = "/home/lcc/config/roster.toml"
 )
 
 var peerInfo = new(peerConfig.PeerInfo)
@@ -81,7 +83,7 @@ type AssignVO struct {
 
 func main() {
 	log.Println("============ application starts ============")
-	err := peerConfig.LoadPeerInfo("config133.yaml", peerInfo)
+	err := peerConfig.LoadPeerInfo("config154.yaml", peerInfo)
 	if err != nil {
 		log.Panic(err)
 	}
@@ -298,7 +300,7 @@ func ProcessReq(fairContract *client.Contract, req VMReq) {
 		log.Printf("process %s request success, the request's detail is %v, the assign information is %v", req.UserId, req, assignVO)
 	}
 	contract.UpdateProportionsAsync(fairContract)
-	// todo: send to the signature-based consensus...
+	go PostToPublicChain(assignVO)
 }
 
 func GetAssignInfo(cspId int, vmReq VMReq) (*AssignVO, error) {
@@ -327,5 +329,24 @@ func GetAssignInfo(cspId int, vmReq VMReq) (*AssignVO, error) {
 	} else {
 		return nil, nil
 	}
+}
 
+func PostToPublicChain(assignVO *AssignVO) {
+	msg, err := json.Marshal(assignVO)
+	if err != nil {
+		log.Println("Failed to convert assignVO to json: ", err)
+	}
+	resp, err := cosiUtil.Sign([]byte(msg), rosterFileName)
+	if err != nil {
+		log.Println("Failed to sign msg: ", err)
+	}
+
+	sig, err := cosiUtil.WriteSigAsJSON(resp)
+	if err != nil {
+		log.Println("Failed to convert signature to json: ", err)
+	}
+
+	log.Println("Sign successfully! The signature is: ", sig)
+
+	//todo: Post to public blockchain
 }
