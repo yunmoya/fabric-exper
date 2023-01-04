@@ -1,18 +1,25 @@
 package main
 
 import (
-	peerConfig "app/config"
+	myabi "app/abi"
+	"app/config"
 	"app/contract"
 	"app/cosiUtil"
-	"app/myabi"
 	"context"
+	"crypto/ecdsa"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
+	"github.com/ethereum/go-ethereum/accounts/abi/bind"
+	"github.com/ethereum/go-ethereum/crypto"
 	"io/ioutil"
 	"log"
+	"math/big"
 	"net/http"
 	"os"
 	"path"
@@ -29,19 +36,45 @@ import (
 	"google.golang.org/grpc/credentials"
 )
 
+// global configuration
 const (
-	CSPNUM                 = 3
-	REQ_PORT               = 8080
-	peerConsensusThreshold = 2
-	channelName            = "lccch"
-	ecContractName         = "ec"
-	fairContractName       = "fair"
-	assignPath             = "/assignInfo/assign"
-	rosterFileName         = "/home/lcc/config/roster.toml"
+	ConfigName             = "154"
+	CspNum                 = 3
+	ReqPort                = 8080
+	PeerConsensusThreshold = 2
 )
 
-var peerInfo = new(peerConfig.PeerInfo)
-var IPArr = [CSPNUM + 1]string{"", "10.1.0.133", "10.1.0.154", "10.1.0.155"}
+// configuration about fabric
+const (
+	ChannelName      = "lccch"
+	EcContractName   = "ec"
+	FairContractName = "fair"
+)
+
+var PeerInfoName = fmt.Sprintf("config%s.yaml", ConfigName)
+
+// configuration about ethereum
+const (
+	InfuraURL            = "wss://goerli.infura.io/ws/v3/547bcf201d264561b95c50860d2dddff"
+	UserReqContractAddr  = "0xA9785c5302eF4Ac6A43B00B41fE2ADDf15d79Ed1"
+	ResponseContractAddr = "0xf64646DF059840890AaDdaaAE6D2A14Bd8Ecb5f9"
+)
+
+var WalletName = fmt.Sprintf("wallet/wallet%s.yaml", ConfigName)
+var WalletInfo = new(config.WalletInfo)
+
+// configuration about cosi
+const (
+	rosterFileName = "/home/lcc/config/roster.toml"
+)
+
+// configuration about cloudservice
+const (
+	assignPath = "/assignInfo/assign"
+)
+
+var PeerInfo = new(config.PeerInfo)
+var IPArr = [CspNum + 1]string{"", "10.1.0.133", "10.1.0.154", "10.1.0.155"}
 
 type VMReq struct {
 	ID              string `json:"ID"`              // user request id
@@ -83,39 +116,55 @@ type AssignVO struct {
 
 func main() {
 	log.Println("============ application starts ============")
-	err := peerConfig.LoadPeerInfo("config154.yaml", peerInfo)
+	err := config.LoadPeerInfo(PeerInfoName, PeerInfo)
 	if err != nil {
 		log.Panic(err)
 	}
 
-	// fabric client config
-	// The gRPC client connection should be shared by all Gateway connections to this endpoint
+	// fabric ethClient config
+	// The gRPC ethClient connection should be shared by all Gateway connections to this endpoint
 	clientConnection := newGrpcConnection()
 	gw := createFabricClient(clientConnection)
 	defer clientConnection.Close()
 	defer gw.Close()
-	network := gw.GetNetwork(channelName)
+	network := gw.GetNetwork(ChannelName)
 
 	// fabric contract
-	ecContract := network.GetContract(ecContractName)
-	fairContract := network.GetContract(fairContractName)
+	ecContract := network.GetContract(EcContractName)
+	fairContract := network.GetContract(FairContractName)
 	contract.InitECLedger(ecContract)
 	contract.InitFairLedger(fairContract)
 
-	client, err := ethclient.Dial("wss://goerli.infura.io/ws/v3/547bcf201d264561b95c50860d2dddff")
-	//client, err := ethclient.Dial("ws://localhost:7545") //ganache
+	// ehereum ethClient config
+	ethClient, err := ethclient.Dial(InfuraURL)
+	//ethClient, err := ethclient.Dial("ws://localhost:7545") //ganache
 	if err != nil {
 		log.Fatal(err)
 	}
+	// eth account config
+	err = config.LoadWalletInfo(WalletName, WalletInfo)
+	if err != nil {
+		log.Fatal(err)
+	}
+	privateKey, err := crypto.HexToECDSA(WalletInfo.WalletPrivateKey)
+	if err != nil {
+		log.Printf("Failed to get private key: %w", err)
+	}
+	publicKey := privateKey.Public()
+	publicKeyECDSA, ok := publicKey.(*ecdsa.PublicKey)
+	if !ok {
+		log.Fatal("cannot assert type: publicKey is not of type *ecdsa.PublicKey")
+	}
+	ethFromAddress := crypto.PubkeyToAddress(*publicKeyECDSA)
 
-	contractAddress := common.HexToAddress("0x74770669068090D6dCeA5163aBD5af61829A647a")
-	//contractAddress := common.HexToAddress("0x59Af076b2A8f82A17062c78626B226A1cAd5CACC") //ganache
+	userReqContractAddr := common.HexToAddress(UserReqContractAddr)
+	//userReqContractAddr := common.HexToAddress("0x59Af076b2A8f82A17062c78626B226A1cAd5CACC") //ganache
 	query := ethereum.FilterQuery{
-		Addresses: []common.Address{contractAddress},
+		Addresses: []common.Address{userReqContractAddr},
 	}
 
 	logs := make(chan types.Log)
-	sub, err := client.SubscribeFilterLogs(context.Background(), query, logs)
+	sub, err := ethClient.SubscribeFilterLogs(context.Background(), query, logs)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -139,14 +188,13 @@ func main() {
 			// 1. Get request, blockNumber and offset in the newest block
 			blockNumber := vLog.BlockNumber
 			offset := vLog.TxIndex
-			log.Println("The offset is: ", offset)
 			reqData := new(ReqData)
 			err = contractAbi.UnpackIntoInterface(reqData, "NewRequest", vLog.Data)
 			if err != nil {
 				log.Fatal(err)
 			}
 			log.Print("Parse request data successfully: ", reqData)
-			assetECId := GetECAssetId(blockNumber, int(offset))
+			assetECId := getECAssetId(blockNumber, int(offset))
 			req := VMReq{
 				ID:              assetECId,
 				UserId:          reqData.UserId,
@@ -163,7 +211,7 @@ func main() {
 			ecAsset := contract.ReadECAssetByID(ecContract, assetECId)
 
 			for {
-				if ecAsset.EndorsementCount < peerConsensusThreshold || contract.StatusAssetExists(ecContract, assetECId) {
+				if ecAsset.EndorsementCount < PeerConsensusThreshold || contract.StatusAssetExists(ecContract, assetECId) {
 					break
 				} else {
 					// 4. update status to completed(1)
@@ -173,7 +221,7 @@ func main() {
 						continue
 					} else {
 						// 5. fair scheduled contract process request
-						ProcessReq(fairContract, req)
+						processReq(fairContract, ethClient, privateKey, ethFromAddress, reqData.User, req)
 					}
 				}
 			}
@@ -204,9 +252,9 @@ func createFabricClient(clientConnection *grpc.ClientConn) *client.Gateway {
 
 // newGrpcConnection creates a gRPC connection to the Gateway server.
 func newGrpcConnection() *grpc.ClientConn {
-	var tlsCertPath = peerInfo.TlsCertPath
-	var gatewayPeer = peerInfo.GatewayPeer
-	var peerEndpoint = peerInfo.PeerEndpoint
+	var tlsCertPath = PeerInfo.TlsCertPath
+	var gatewayPeer = PeerInfo.GatewayPeer
+	var peerEndpoint = PeerInfo.PeerEndpoint
 
 	certificate, err := loadCertificate(tlsCertPath)
 	if err != nil {
@@ -227,8 +275,8 @@ func newGrpcConnection() *grpc.ClientConn {
 
 // newIdentity creates a client identity for this Gateway connection using an X.509 certificate.
 func newIdentity() *identity.X509Identity {
-	var certPath = peerInfo.CertPath
-	var mspID = peerInfo.Mspid
+	var certPath = PeerInfo.CertPath
+	var mspID = PeerInfo.Mspid
 
 	certificate, err := loadCertificate(certPath)
 	if err != nil {
@@ -253,7 +301,7 @@ func loadCertificate(filename string) (*x509.Certificate, error) {
 
 // newSign creates a function that generates a digital signature from a message digest using a private key.
 func newSign() identity.Sign {
-	var keyPath = peerInfo.KeyPath
+	var keyPath = PeerInfo.KeyPath
 
 	files, err := os.ReadDir(keyPath)
 	if err != nil {
@@ -278,18 +326,25 @@ func newSign() identity.Sign {
 	return sign
 }
 
-func GetECAssetId(blockNumber uint64, offset int) string {
+func getECAssetId(blockNumber uint64, offset int) string {
 	return "asset" + strconv.FormatUint(blockNumber, 10) + "-" + strconv.Itoa(offset)
 }
 
-func ProcessReq(fairContract *client.Contract, req VMReq) {
+func processReq(
+	fairContract *client.Contract,
+	ethClient *ethclient.Client,
+	privateKey *ecdsa.PrivateKey,
+	fromAddr common.Address,
+	toAddr common.Address,
+	req VMReq,
+) {
 	cspId := contract.SelectCSP(fairContract, int(req.Config))
 	if cspId == -1 {
 		log.Printf("select csp fail, the request's detail is %v", req.UserId, req)
 		return
 	}
 
-	assignVO, err := GetAssignInfo(cspId, req)
+	assignVO, err := getAssignInfo(cspId, req)
 	if err != nil {
 		log.Panic(err)
 	}
@@ -300,12 +355,12 @@ func ProcessReq(fairContract *client.Contract, req VMReq) {
 		log.Printf("process %s request success, the request's detail is %v, the assign information is %v", req.UserId, req, assignVO)
 	}
 	contract.UpdateProportionsAsync(fairContract)
-	go PostToPublicChain(assignVO)
+	go postToPublicChain(ethClient, fromAddr, toAddr, privateKey, req, assignVO)
 }
 
-func GetAssignInfo(cspId int, vmReq VMReq) (*AssignVO, error) {
+func getAssignInfo(cspId int, vmReq VMReq) (*AssignVO, error) {
 	ip := IPArr[cspId]
-	url := "http://" + ip + ":" + strconv.Itoa(REQ_PORT) + assignPath
+	url := "http://" + ip + ":" + strconv.Itoa(ReqPort) + assignPath
 	reqBodyContent := ReqBody{Config: int(vmReq.Config), Duration: int(vmReq.Duration), UserId: vmReq.UserId}
 	reqBodyContentJson, err := json.Marshal(reqBodyContent)
 	if err != nil {
@@ -331,22 +386,72 @@ func GetAssignInfo(cspId int, vmReq VMReq) (*AssignVO, error) {
 	}
 }
 
-func PostToPublicChain(assignVO *AssignVO) {
+func postToPublicChain(
+	client *ethclient.Client,
+	fromAddr common.Address,
+	toAddr common.Address,
+	privateKey *ecdsa.PrivateKey,
+	req VMReq,
+	assignVO *AssignVO,
+) {
 	msg, err := json.Marshal(assignVO)
 	if err != nil {
-		log.Println("Failed to convert assignVO to json: ", err)
+		log.Fatal("Failed to convert assignVO to json: ", err)
 	}
-	resp, err := cosiUtil.Sign([]byte(msg), rosterFileName)
+
+	if req.EncryptRequired {
+		block, _ := pem.Decode([]byte(req.PubKey))
+		if block == nil || block.Type != "PUBLIC KEY" {
+			log.Fatal("Failed to decode PEM block containing public key.")
+		}
+		pubKey, err := x509.ParsePKIXPublicKey(block.Bytes)
+		if err != nil {
+			log.Fatal(err)
+		}
+		switch pubKey.(type) {
+		case *rsa.PublicKey:
+			log.Println("Pub is of type RSA.")
+			log.Println("The message before encryption is: ", string(msg))
+			msg, err = rsa.EncryptPKCS1v15(rand.Reader, pubKey.(*rsa.PublicKey), msg)
+			if err != nil {
+				log.Fatal("Failed to encrypt message: ", err)
+			}
+			log.Println("The encrypted message is: ", string(msg))
+			// msg, err = rsa.EncryptOAEP(sha256.New(), rand.Reader, pubKey.(*rsa.PublicKey), msg, nil)
+		default:
+			log.Fatal("Unknown type of public key")
+		}
+
+	}
+
+	hash, sig, err := cosiUtil.GetCollectiveSignature(msg, rosterFileName)
 	if err != nil {
-		log.Println("Failed to sign msg: ", err)
+		log.Fatal(err)
 	}
-
-	sig, err := cosiUtil.WriteSigAsJSON(resp)
+	nonce, err := client.PendingNonceAt(context.Background(), fromAddr)
 	if err != nil {
-		log.Println("Failed to convert signature to json: ", err)
+		log.Fatal("Failed to get nonce: %w", err)
 	}
 
-	log.Println("Sign successfully! The signature is: ", sig)
+	gasPrice, err := client.SuggestGasPrice(context.Background())
+	if err != nil {
+		log.Fatal("Failed to get gasPrice: %w", err)
+	}
 
-	//todo: Post to public blockchain
+	auth := bind.NewKeyedTransactor(privateKey)
+	auth.Nonce = big.NewInt(int64(nonce))
+	auth.Value = big.NewInt(0)     // in wei
+	auth.GasLimit = uint64(900000) // in units
+	auth.GasPrice = gasPrice
+
+	address := common.HexToAddress(ResponseContractAddr)
+	instance, err := myabi.NewResponse(address, client)
+	if err != nil {
+		log.Fatal("Failed to create instance: %w", err)
+	}
+	tx, err := instance.ResponseToUser(auth, toAddr, req.UserId, hash, sig, msg, req.EncryptRequired)
+	if err != nil {
+		log.Fatal("Failed to write to response contract: %w", err)
+	}
+	log.Println("tx sent: ", tx.Hash().Hex())
 }

@@ -1,4 +1,4 @@
-package peerConfig
+package config
 
 import (
 	"fmt"
@@ -26,6 +26,12 @@ type PeerInfo struct {
 	GatewayPeer  string `yaml:"gateway-peer"`
 }
 
+type WalletInfo struct {
+	WalletPrivateKey    string `yaml:"wallet-private-key"`
+	WalletPublicKey     string `yaml:"wallet-public-key"`
+	WalletPublicAddress string `yaml:"wallet-public-address"`
+}
+
 func LoadPeerInfo(path string, peerInfo *PeerInfo) error {
 	file, err := ioutil.ReadFile(path)
 	if err != nil {
@@ -38,6 +44,21 @@ func LoadPeerInfo(path string, peerInfo *PeerInfo) error {
 	}
 
 	log.Printf("Load peer information successfully! The information is %v", peerInfo)
+	return nil
+}
+
+func LoadWalletInfo(path string, walletInfo *WalletInfo) error {
+	file, err := ioutil.ReadFile(path)
+	if err != nil {
+		return err
+	}
+
+	err = yaml.Unmarshal(file, &walletInfo)
+	if err != nil {
+		return err
+	}
+
+	log.Printf("Load wallet information successfully! The information is %v", walletInfo)
 	return nil
 }
 
